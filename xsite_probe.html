@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>xsite probe</title></head>
+<body>
+  <script>
+    // Third-party cookie probe for the LIVE-21155 cross-site sentinel. Embedded as a hidden
+    // cross-site iframe by qa-live-server's cross_site_check page. Because github.io is a
+    // different registrable site than bsstag.com (and each *.github.io is its own site on the
+    // Public Suffix List), a SameSite=None;Secure cookie set here is a GENUINE third-party
+    // cookie — REFUSED while Safari "Prevent Cross-Site Tracking" (ITP) is ON. hasStorageAccess()
+    // adds the partitioned-cookie signal. Posts XSITE_ALLOWED / XSITE_BLOCKED to the parent,
+    // re-evaluated on an interval so the parent updates after the Safari setting is toggled.
+    (function () {
+      function post(word) {
+        try { (window.parent || window.top).postMessage(word, '*'); } catch (e) {}
+      }
+      function cookieAccepted() {
+        try {
+          var name = 'bs_xsite_tp', val = 'v' + Date.now();
+          document.cookie = name + '=' + val + '; SameSite=None; Secure; Path=/';
+          return document.cookie.indexOf(name + '=' + val) !== -1;
+        } catch (e) { return false; }
+      }
+      async function evaluate() {
+        var accepted = cookieAccepted();
+        if (accepted && typeof document.hasStorageAccess === 'function') {
+          try {
+            var has = await document.hasStorageAccess();
+            post(has ? 'XSITE_ALLOWED' : 'XSITE_BLOCKED');
+            return;
+          } catch (e) { post('XSITE_BLOCKED'); return; }
+        }
+        post(accepted ? 'XSITE_ALLOWED' : 'XSITE_BLOCKED');
+      }
+      evaluate();
+      setInterval(evaluate, 1500);
+    })();
+  </script>
+</body>
+</html>
