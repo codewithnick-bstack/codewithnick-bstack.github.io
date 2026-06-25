@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Injected Header Display</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    pre { background: #f4f4f4; padding: 10px; border-radius: 5px; }
+  </style>
+</head>
+<body>
+  <h1>Injected Headers</h1>
+  <div id="headers">Loading headers...</div>
+  <!--
+    STATIC mirror of qa-components live_server views/check_header.ejs, hosted on github.io so the
+    LIVE-21018 custom-header verify can run BEFORE the live_server deploy lands. The no-cache fix
+    is the http-equiv meta above (the route-header half is server-side, #2060). session_id from
+    ?session_id= query; /check_custom_header_data + /paste are absolute to live_server (CORS open).
+    The session's custom-header profile injects into the device's egress request to
+    /check_custom_header_data regardless of page origin, so cross-origin works.
+    Point the integration URL back to live_server's /check_custom_header once #2060 deploys.
+  -->
+  <script>
+    const LIVE_SERVER = "https://qa-live-server.bsstag.com";
+    const params = new URLSearchParams(location.search);
+    const session_id = params.get("session_id") || "";
+    const apiUrl = LIVE_SERVER + '/check_custom_header_data';
+    const pasteUrl = LIVE_SERVER + '/paste';
+
+    function fetchHeaders(session_id) {
+      fetch(apiUrl, {
+        headers: {
+          'X-Custom-Header': 'MyHeaderValue',
+          'Authorization': 'Bearer mytoken123'
+        },
+        mode: 'cors',
+        cache: 'no-store'
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        const formattedData = JSON.stringify(data.headers, null, 2);
+        document.getElementById('headers').innerHTML = '<pre>' + formattedData + '</pre>';
+        sendToPasteEndpoint(formattedData);
+      })
+      .catch(error => {
+        console.error('Fetch error:', error);
+        document.getElementById('headers').innerHTML =
+          '<pre style="color: red;">Error: ' + error.message + '</pre>';
+      });
+    }
+
+    function sendToPasteEndpoint(headersData) {
+      fetch(pasteUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: session_id.toString(), paste_text: headersData })
+      })
+      .then(response => { if (!response.ok) console.error('Failed to send data to /paste'); })
+      .catch(error => { console.error('Error posting to /paste:', error); });
+    }
+
+    fetchHeaders(session_id);
+  </script>
+</body>
+</html>

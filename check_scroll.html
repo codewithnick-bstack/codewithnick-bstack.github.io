@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Check Scroll</title>
+  <style>
+    .wrap { background: green; position: relative; height: 1000px; overflow-x: scroll; overflow-y: scroll; max-height: 2000px; }
+    .inner { position: relative; height: 1000px; width: 500px; max-height: 1000px; background: green; }
+    section { position: relative; font-size: 12px; color: black; background: yellow; width: 2000px; height: 300px; float: left; opacity: .9; }
+  </style>
+</head>
+<body>
+<!--
+  STATIC mirror of qa-components live_server views/scroll.ejs, hosted on github.io so the LIVE-21018
+  keyboard-scroll fix can be exercised by FT BEFORE the live_server deploy lands.
+  Differences from the .ejs (server provides these there):
+   - session_id read from ?session_id= query param (not <%= %>)
+   - /scroll POST is absolute to qa-live-server (CORS open: Access-Control-Allow-Origin *)
+  The FIX is the front-end: tabindex + focus(preventScroll) so keyboard arrows scroll the div
+  (firing one count per scroll), without the load-focus phantom scroll.
+  Point the integration URL back to live_server's /check_scroll once #2060 deploys.
+-->
+<p id="session_id" style="display: none;"></p>
+<span class="scroll" collapse id="scroll_span">0</span>
+<div id="scrollable-div" class="wrap" tabindex="0">
+  <div class="inner">
+    <section>one</section>
+    <section>two</section>
+    <section>three</section>
+    <section>four</section>
+    <section>five</section>
+    <section>six</section>
+  </div>
+</div>
+<script>
+  var LIVE_SERVER = "https://qa-live-server.bsstag.com";
+  var params = new URLSearchParams(location.search);
+  document.getElementById("session_id").innerHTML = params.get("session_id") || "";
+  var scrollableDiv = document.getElementById("scrollable-div");
+  scrollableDiv.addEventListener("scroll", myFunction);
+  window.addEventListener("scroll", myFunction);
+  // preventScroll: focusing a scrollable element otherwise auto-scrolls it into view, firing a
+  // phantom scroll → scroll_by starts at 1 before the test's keypress (the "1 above 1" off-by-one).
+  window.addEventListener("load", function () { scrollableDiv.focus({ preventScroll: true }); });
+  function myFunction() {
+    var scroll = parseInt(document.getElementById("scroll_span").innerHTML);
+    scroll += 1;
+    document.getElementById("scroll_span").innerHTML = scroll.toString();
+    var s = document.getElementById("session_id").innerHTML;
+    var xhttp = new XMLHttpRequest();
+    xhttp.open("POST", LIVE_SERVER + "/scroll?session_id=" + s + "&scroll_by=" + scroll, false);
+    xhttp.send();
+  }
+</script>
+</body>
+</html>
