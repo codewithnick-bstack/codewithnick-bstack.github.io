@@ -5,11 +5,15 @@
   <script>
     // Third-party cookie probe for the LIVE-21155 cross-site sentinel. Embedded as a hidden
     // cross-site iframe by qa-live-server's cross_site_check page. Because github.io is a
-    // different registrable site than bsstag.com (and each *.github.io is its own site on the
-    // Public Suffix List), a SameSite=None;Secure cookie set here is a GENUINE third-party
-    // cookie — REFUSED while Safari "Prevent Cross-Site Tracking" (ITP) is ON. hasStorageAccess()
-    // adds the partitioned-cookie signal. Posts XSITE_ALLOWED / XSITE_BLOCKED to the parent,
-    // re-evaluated on an interval so the parent updates after the Safari setting is toggled.
+    // different registrable site than bsstag.com, a SameSite=None;Secure cookie set here is a
+    // GENUINE third-party cookie — REFUSED while Safari "Prevent Cross-Site Tracking" (ITP) is
+    // ON. Proven on iPhone16-18.0 (2026-06-25): with ITP ON both the same-doc cookie readback
+    // AND hasStorageAccess() are false; with ITP OFF both are true. Posts XSITE_ALLOWED /
+    // XSITE_BLOCKED to the parent.
+    //
+    // CRITICAL: the parent toggles the Safari setting mid-session, which backgrounds Safari;
+    // the test re-foregrounds it. So re-evaluate on EVERY foreground (focus / visibilitychange /
+    // pageshow) — not just an interval — so the post-toggle read reflects the new setting.
     (function () {
       function post(word) {
         try { (window.parent || window.top).postMessage(word, '*'); } catch (e) {}
@@ -23,16 +27,25 @@
       }
       async function evaluate() {
         var accepted = cookieAccepted();
-        if (accepted && typeof document.hasStorageAccess === 'function') {
+        if (typeof document.hasStorageAccess === 'function') {
           try {
             var has = await document.hasStorageAccess();
-            post(has ? 'XSITE_ALLOWED' : 'XSITE_BLOCKED');
+            // Both signals flip with the ITP toggle; require BOTH for ALLOWED so a single
+            // stale/edge signal can't flip the verdict.
+            post((accepted && has) ? 'XSITE_ALLOWED' : 'XSITE_BLOCKED');
             return;
           } catch (e) { post('XSITE_BLOCKED'); return; }
         }
         post(accepted ? 'XSITE_ALLOWED' : 'XSITE_BLOCKED');
       }
       evaluate();
+      // re-evaluate whenever Safari comes back to the foreground after the settings toggle
+      window.addEventListener('focus', evaluate);
+      window.addEventListener('pageshow', evaluate);
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') evaluate();
+      });
+      // belt-and-suspenders interval (the setting has no change event)
       setInterval(evaluate, 1500);
     })();
   </script>
