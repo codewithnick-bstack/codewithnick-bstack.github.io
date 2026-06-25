@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>xsite diag probe</title></head>
+<body>
+<script>
+// DIAGNOSTIC third-party probe (LIVE-21155). Embedded as a 3p iframe by a different-site parent.
+// Reports EVERY candidate ITP signal so we can see which one flips when Safari "Prevent
+// Cross-Site Tracking" toggles on a real iOS device. Stateless single run; parent reloads it
+// to test cookie persistence (ITP purges 3p cookies across loads).
+(function () {
+  function post(obj) { try { (window.parent||window.top).postMessage({src:'xsite_diag',data:obj}, '*'); } catch(e){} }
+  (async function () {
+    var r = {};
+    // A. persisted 3p cookie from a PRIOR load still here? (set below; on a reload this reveals purge)
+    r.persistedCookiePresent = document.cookie.indexOf('bs_persist=') !== -1;
+    // B. same-doc 3p cookie write + immediate readback (the CURRENT probe's signal)
+    try {
+      document.cookie = 'bs_diag=v'+Date.now()+'; SameSite=None; Secure; Path=/';
+      r.cookieSameDocReadback = document.cookie.indexOf('bs_diag=') !== -1;
+    } catch(e){ r.cookieSameDocReadback = 'err:'+e.message; }
+    // C. set the persistence-test cookie (read back on the NEXT load as r.persistedCookiePresent)
+    try { document.cookie = 'bs_persist=1; SameSite=None; Secure; Path=/; Max-Age=600'; } catch(e){}
+    // D. hasStorageAccess()
+    try { r.hasStorageAccess = typeof document.hasStorageAccess==='function' ? await document.hasStorageAccess() : 'no-api'; }
+    catch(e){ r.hasStorageAccess = 'err:'+e.message; }
+    // E. localStorage in 3p frame
+    try { localStorage.setItem('bs_ls','1'); r.localStorage = localStorage.getItem('bs_ls')==='1'; }
+    catch(e){ r.localStorage = 'err:'+e.message; }
+    r.cookieRaw = document.cookie || '(empty)';
+    post(r);
+  })();
+})();
+</script>
+</body>
+</html>
