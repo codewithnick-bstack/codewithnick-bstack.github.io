@@ -39,10 +39,16 @@
       &value=MyHeaderValue       expected value (case-insensitive); omit to check presence only
       &present=true|false        true = expect header present (PASS if injected),
                                  false = expect header absent (PASS if NOT injected, i.e. disable case)
-      &echo=self|server          data source:
-                                   self   = page fetches postman-echo.com/headers and sets the
-                                            header on its OWN fetch (GH-pages proof: exercises page
-                                            logic + OCR without a live in-session proxy)
+      &echo=self|server|httpbin  data source:
+                                   self   = SYNTHETIC (no network): the page builds the echoed
+                                            header map from its own params — present=true injects
+                                            key=value, present=false omits it. Deterministic proof
+                                            of the page verdict logic + the OCR PASS/FAIL render
+                                            pipeline, with zero external dependency (no CORS, no
+                                            flaky third-party echo). Use for the GH-pages proof.
+                                   httpbin= real network echo via httpbin.org/headers (CORS *),
+                                            page sets the header on its own fetch. Optional true-
+                                            network sanity check; httpbin is sometimes 503.
                                    server = fetch <live_server>/check_custom_header_data (via the
                                             &live_server= param, or same-origin when this page is
                                             served from the live_server itself), whose headers
@@ -71,11 +77,20 @@
     }
 
     function fetchSelf() {
-      // GH-pages proof: page sets the header on its own request, postman-echo reflects it.
-      // For the present=false (disable) proof, do NOT send the header so echo omits it -> PASS.
+      // SYNTHETIC (no network): build the echoed header map from params. present=true -> key set,
+      // present=false -> key omitted. Deterministically drives the verdict + OCR render so the
+      // GH-pages proof needs no CORS-enabled third-party echo.
+      var headers = {};
+      if (present) headers[key] = value || "MyHeaderValue";
+      return Promise.resolve(headers);
+    }
+
+    function fetchHttpbin() {
+      // Optional real-network echo (CORS *). Page sets the header on its own request; for the
+      // disable proof (present=false) it omits the header so httpbin's echo lacks it -> PASS.
       var h = {};
       if (present) h[key] = value || "MyHeaderValue";
-      return fetch("https://postman-echo.com/headers?cb=" + Date.now(), { headers: h, cache: "no-store" })
+      return fetch("https://httpbin.org/headers?cb=" + Date.now(), { headers: h, cache: "no-store" })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (d) { return d.headers || {}; });
     }
@@ -90,8 +105,14 @@
         .then(function (d) { return d.headers || {}; });
     }
 
+    function source() {
+      if (echoMode === "self") return fetchSelf();
+      if (echoMode === "httpbin") return fetchHttpbin();
+      return fetchServer();
+    }
+
     function check() {
-      (echoMode === "self" ? fetchSelf() : fetchServer())
+      source()
         .then(function (headers) { render(verdict(headers)); })
         .catch(function (e) {
           // A hard fetch error on the present=false path still means "header not observed" -> PASS.
