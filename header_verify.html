@@ -10,9 +10,11 @@
   <style>
     body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; padding: 16px; box-sizing: border-box; background: #fff; font-family: Arial, sans-serif; }
     #result {
-      /* Single short word (PASS / FAIL): responsive, never clips or overflows, always large enough
-         for OCR. clamp = floor / fluid / cap. Same pattern as accessibility_check.ejs so BSA's
-         existing ocrCanvasWord(['pass','fail']) reads it with zero new OCR code. */
+      /* Single short STATE word (PRESENT / ABSENT): responsive, never clips or overflows,
+         always large enough for OCR. clamp = floor / fluid / cap. Same pattern as the other
+         capability sentinel pages (dark_mode_check renders DARK/LIGHT, offline_check ONLINE/
+         OFFLINE) so the test reads it with the existing verifyCapabilityWord(['present','absent']
+         , expected) — screenshot -> centred crop -> OCR the word. */
       font-size: clamp(40px, 16vw, 96px);
       line-height: 1.1;
       font-weight: bold;
@@ -24,107 +26,108 @@
       overflow-wrap: break-word;
       padding: clamp(12px, 4vw, 32px) clamp(16px, 6vw, 48px);
     }
-    /* Fail detail: shown UNDER the word only on FAIL (for humans / screenshots), small so it
-       never competes with the OCR word. Hidden on PASS + on CHECKING. The test OCRs #result,
-       not this. */
-    #detail { display: none; margin-top: 18px; max-width: 92vw; font-size: clamp(12px, 3vw, 18px); color: #b00; text-align: center; overflow-wrap: anywhere; white-space: pre-wrap; }
-    body.fail #detail { display: block; }
-    body.fail { flex-direction: column; }
+    /* Diagnostic detail: shown for humans/screenshots on any non-PRESENT state (ABSENT/error) —
+       NOT for OCR. Fixed + horizontally centred so it never shifts the centred state word, in a
+       light red so the OCR crop (which reads the centred dark word) never picks it up. */
+    #detail { display: none; position: fixed; left: 50%; bottom: 3vh; transform: translateX(-50%); width: max-content; max-width: 94vw; max-height: 34vh; overflow: auto; font-family: monospace; font-size: clamp(10px, 1.8vw, 13px); line-height: 1.35; color: #f2b8b8; text-align: left; overflow-wrap: anywhere; white-space: pre-wrap; }
+    body.show-detail #detail { display: block; }
   </style>
 </head>
 <body>
   <!--
-    Self-contained header-injection verify page. Replaces the old two-hop check_header.ejs +
-    /paste -> /pasted_text flow (which raced: the device POSTed captured headers to /paste, the
-    test fetched /pasted_text separately, and that write/read window flapped). Here the page does
-    the whole verify IN-PAGE and renders ONE OCR-able state word (PASS / FAIL), the same pattern
-    as accessibility_check.ejs / dark_mode. The test screenshots + OCRs the word after each toggle
-    with ocrCanvasWord(['pass','fail']). No second endpoint, no paste round-trip.
+    Self-contained custom-header-injection verify sentinel. Replaces the old two-hop flow
+    (check_header.ejs -> POST /paste ; test fetches /pasted_text separately) which RACED: the
+    write and the separate read flapped, giving "expected false to equal true" + "Failed to fetch
+    pasted text after N attempts". Here the page checks the injected header IN-PAGE and renders
+    the OBSERVED STATE as one OCR-able word — PRESENT or ABSENT — exactly like dark_mode_check
+    (DARK/LIGHT) / offline_check (ONLINE/OFFLINE). No /paste, no /pasted_text, no second round-trip.
 
-    URL model — arbitrary header pairs, ALL must match for PASS:
-      /header_verify.html?X-Custom-Header=MyHeaderValue&Authorization=null&echo=self
-        * each NON-reserved query pair is a header expectation:
-            key   = header name (case-insensitive)
-            value = expected value (case-insensitive); the literal  null  means "expect ABSENT"
-        * verdict = PASS iff EVERY pair is satisfied (present-ones found w/ matching value,
-          null-ones absent); otherwise FAIL. Per-key results go to #detail + console for fail-only
-          diagnosis, never OCR'd.
-        * the caller builds the pair list per platform, e.g. android run passes
-          ?X-Custom-Header=MyHeaderValue ; the same scenario on iOS (disable case) passes
-          ?X-Custom-Header=null . The page holds no platform logic.
+    LIVE RE-RENDER (the key property):
+      The page is bookmark-launched ONCE and stays open for the whole session. It re-fetches the
+      echo on a short interval, so when the header profile is toggled in the dock (enable/disable)
+      the device's next egress request carries/drops the header, the next poll observes the change,
+      and the word flips PRESENT <-> ABSENT WITH NO RE-NAVIGATION. The test just re-OCRs the same
+      open page after each toggle:
+        after ENABLE  -> word becomes PRESENT -> assert 'present'
+        after DISABLE -> word becomes ABSENT  -> assert 'absent'
+      Each fetch is cache-busted (?cb=) + no-store so a poll never reads a stale header set.
 
-    Reserved (NOT treated as header pairs):
-      &echo=self|server|httpbin  data source:
-                                   self    = SYNTHETIC (no network): build the echoed header map
-                                             from the pairs themselves (present -> injected,
-                                             null -> omitted). Deterministic proof of verdict logic
-                                             + OCR render, zero external dep / CORS. GH-pages proof.
-                                   server  = fetch <live_server>/check_custom_header_data, whose
-                                             headers reflect the SESSION's proxy-injected egress
-                                             (real in-session path). Same-origin when this page is
-                                             served from the live_server, else pass &live_server=.
-                                   httpbin = real network echo via httpbin.org/headers (CORS *):
-                                             page sets the present-pairs on its own fetch. Optional
-                                             true-network sanity check (httpbin is sometimes 503).
-      &live_server=<url>         live_server base for echo=server (required unless same-origin).
-      &cb=<x>                    cache-buster, ignored.
+    URL:
+      /header_verify?key=X-Custom-Header&value=MyHeaderValue
+        key    = header name to observe (case-insensitive; default X-Custom-Header)
+        value  = expected value (case-insensitive). If given, PRESENT requires the value to match;
+                 a key present with a DIFFERENT value reads ABSENT (wrong header != injected).
+                 Omit value to check presence of the key alone.
+
+    Reserved (not header params): echo, live_server, session_id, cb.
+      &echo=server|self|httpbin  data source (default server):
+        server  = same-origin GET /check_custom_header_data ; its request carries the SESSION's
+                  proxy-injected headers, and the route echoes them back. Real in-session path
+                  (no CORS — same origin as this page on the live_server).
+        self    = SYNTHETIC (no network): echo the key=value from the URL. Deterministic PRESENT
+                  for offline OCR-render dev (can't exercise a live toggle).
+        httpbin = real network echo via httpbin.org/headers (CORS *): page sets the header on its
+                  own fetch. Optional sanity check (httpbin is sometimes 503).
+      &live_server=<url>  override base for echo=server (else same-origin).
   -->
   <div id="result">CHECKING</div>
   <div id="detail"></div>
   <script>
-    var RESERVED = { echo: 1, live_server: 1, cb: 1 };
-    var params    = new URLSearchParams(location.search);
-    var echoMode  = (params.get("echo") || "self").toLowerCase();
+    var params     = new URLSearchParams(location.search);
+    var echoMode   = (params.get("echo") || "server").toLowerCase();
     var liveServer = params.get("live_server") || "";
+    var key        = (params.get("key")   || "X-Custom-Header").toLowerCase();
+    var value      = params.get("value");                    // null if omitted => presence-only
+    var wantValue  = value === null ? null : String(value).toLowerCase();
 
-    // Build the expectation list from every non-reserved pair. value === "null" -> expect absent.
-    var expects = [];
-    params.forEach(function (val, rawKey) {
-      if (RESERVED[rawKey.toLowerCase()]) return;
-      var wantAbsent = String(val).toLowerCase() === "null";
-      expects.push({ key: rawKey.toLowerCase(), value: wantAbsent ? null : String(val).toLowerCase(), wantAbsent: wantAbsent });
-    });
-
-    // Render the OCR word (PASS/FAIL/CHECKING). On FAIL, reveal the detail line underneath;
-    // on PASS/CHECKING keep it hidden so nothing competes with the word for OCR.
+    // Render the observed STATE word + toggle the diagnostic (shown on anything but PRESENT).
     function render(word, detailText) {
       document.getElementById("result").innerText = word;
-      var d = document.getElementById("detail");
-      d.innerText = detailText || "";
-      document.body.classList.toggle("fail", word === "FAIL");
+      document.getElementById("detail").innerText = detailText || "";
+      document.body.classList.toggle("show-detail", word !== "PRESENT");
     }
 
-    // Evaluate all expectations against an echoed header map. Returns {pass, detail[]}.
-    function evaluate(headers) {
+    // Observe the header in the echoed map. PRESENT iff key exists (and value matches when given);
+    // otherwise ABSENT. Returns {word, observedVal, has}.
+    function observe(headers) {
       var lower = {};
       Object.keys(headers || {}).forEach(function (k) { lower[k.toLowerCase()] = String(headers[k]).toLowerCase(); });
-      var allPass = true;
-      var detail = [];
-      if (expects.length === 0) { allPass = false; detail.push("no header pairs given"); }
-      expects.forEach(function (e) {
-        var has = Object.prototype.hasOwnProperty.call(lower, e.key);
-        var ok;
-        if (e.wantAbsent) {
-          ok = !has;                                   // disable case: PASS when header absent
-        } else {
-          ok = has && (e.value === "" || lower[e.key] === e.value);  // presence (+value if given)
-        }
-        if (!ok) allPass = false;
-        detail.push(e.key + (e.wantAbsent ? "=ABSENT?" : "=" + e.value) + " -> " + (ok ? "OK" : "MISS(got " + (has ? lower[e.key] : "<none>") + ")"));
-      });
-      return { pass: allPass, detail: detail };
+      var has = Object.prototype.hasOwnProperty.call(lower, key);
+      var present = has && (wantValue === null || lower[key] === wantValue);
+      return { word: present ? "PRESENT" : "ABSENT", observedVal: has ? lower[key] : null, observed: lower };
+    }
+
+    // Human-readable diagnostic (light-red, centred, OCR-safe): the state, the source, what was
+    // expected vs observed for the key, and the FULL observed header map — so an ABSENT/error run
+    // needs no log-diving to see what the echo actually returned.
+    function buildReport(word, o, fetchErr) {
+      var lines = [];
+      lines.push("HEADER VERIFY: " + word);
+      lines.push("source: echo=" + echoMode + (echoMode === "server" ? " (" + (liveServer || location.origin) + "/check_custom_header_data)" : ""));
+      if (fetchErr) lines.push("fetch error: " + fetchErr);
+      lines.push("checking: " + key + (wantValue === null ? " (presence only)" : " == \"" + wantValue + "\""));
+      lines.push("observed:  " + key + " = " + (o && o.observedVal !== null && o.observedVal !== undefined ? "\"" + o.observedVal + "\"" : "<none>"));
+      var obs = (o && o.observed) || {};
+      var keys = Object.keys(obs);
+      lines.push("all observed headers (" + keys.length + "):");
+      if (keys.length === 0) {
+        lines.push("  <none — echo returned no headers>");
+      } else {
+        keys.sort().forEach(function (k) { lines.push("  " + k + ": " + obs[k]); });
+      }
+      return lines.join("\n");
     }
 
     // --- data sources ---
     function fetchSelf() {
-      // SYNTHETIC (no network): the echoed map = present-pairs injected, null-pairs omitted.
+      // SYNTHETIC (no network): echo just this key=value. Deterministic PRESENT for offline dev.
       var headers = {};
-      expects.forEach(function (e) { if (!e.wantAbsent) headers[e.key] = e.value || "MyHeaderValue"; });
+      headers[key] = wantValue || "MyHeaderValue";
       return Promise.resolve(headers);
     }
     function fetchHttpbin() {
       var h = {};
-      expects.forEach(function (e) { if (!e.wantAbsent) h[e.key] = e.value || "MyHeaderValue"; });
+      h[key] = wantValue || "MyHeaderValue";
       return fetch("https://httpbin.org/headers?cb=" + Date.now(), { headers: h, cache: "no-store" })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (d) { return d.headers || {}; });
@@ -136,29 +139,34 @@
         .then(function (d) { return d.headers || {}; });
     }
     function source() {
-      if (echoMode === "server")  return fetchServer();
+      if (echoMode === "self")    return fetchSelf();
       if (echoMode === "httpbin") return fetchHttpbin();
-      return fetchSelf();
+      return fetchServer();
     }
 
     function check() {
       source()
         .then(function (headers) {
-          var v = evaluate(headers);
-          render(v.pass ? "PASS" : "FAIL", v.pass ? "" : v.detail.join("\n"));
-          if (!v.pass) console.log("[header_verify] FAIL:", v.detail.join(" | "));
+          var o = observe(headers);
+          render(o.word, o.word === "PRESENT" ? "" : buildReport(o.word, o, null));
+          if (o.word !== "PRESENT") console.log("[header_verify] ABSENT\n" + buildReport(o.word, o, null));
         })
         .catch(function (e) {
-          // Fetch error can't confirm any present-expectation -> FAIL. (A pure all-absent check
-          // could arguably PASS on error, but a network error is a real signal worth surfacing.)
-          console.error("[header_verify] fetch error:", e);
-          render("FAIL", "fetch error: " + e.message);
+          // Could not obtain the echo — read ABSENT (header not observable) + dump the raw error.
+          var o = observe({});
+          var report = buildReport("ABSENT", o, (e && e.message) || String(e));
+          render("ABSENT", report);
+          console.error("[header_verify] fetch failed\n" + report, e);
         });
     }
 
     check();
-    // Live re-check so a mid-session enable/disable toggle is reflected without re-navigation.
-    setInterval(check, 3000);
+    // LIVE re-check: the page is bookmark-launched once and stays open, so re-polling the echo is
+    // what makes the word flip PRESENT<->ABSENT after a dock enable/disable toggle WITHOUT any
+    // re-navigation. 1.5s keeps the post-toggle stale window short so the test's OCR reads fresh
+    // state quickly. Each fetch is cache-busted + no-store (see source()), so a poll never reads a
+    // stale header set.
+    setInterval(check, 1500);
   </script>
 </body>
 </html>
