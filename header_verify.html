@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Header Verify</title>
+  <style>
+    body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; padding: 16px; box-sizing: border-box; background: #fff; font-family: Arial, sans-serif; }
+    #result {
+      /* Single short word (PASS / FAIL): responsive, never clips or overflows,
+         always large enough for OCR. clamp = floor / fluid / cap. Mirrors accessibility_check.ejs. */
+      font-size: clamp(40px, 16vw, 96px);
+      line-height: 1.1;
+      font-weight: bold;
+      letter-spacing: 0.08em;
+      color: #000;
+      text-align: center;
+      max-width: 90vw;
+      box-sizing: border-box;
+      overflow-wrap: break-word;
+      padding: clamp(12px, 4vw, 32px) clamp(16px, 6vw, 48px);
+    }
+  </style>
+</head>
+<body>
+  <!--
+    Self-contained header-injection verify page. Replaces the old two-hop check_header.ejs +
+    /paste -> /pasted_text flow (which raced: the device POSTed captured headers to /paste, the
+    test fetched /pasted_text separately, and the write/read window flapped). Here the page does
+    the whole verify IN-PAGE and renders a single OCR-able state word (PASS / FAIL), the same
+    pattern as accessibility_check.ejs / dark_mode. The test reads the word with ocrCanvasWord
+    (screenshot -> crop -> OCR) after each toggle. No second endpoint, no paste round-trip.
+
+    Query params:
+      ?key=X-Custom-Header       header name to verify (case-insensitive)
+      &value=MyHeaderValue       expected value (case-insensitive); omit to check presence only
+      &present=true|false        true = expect header present (PASS if injected),
+                                 false = expect header absent (PASS if NOT injected, i.e. disable case)
+      &echo=self|server          data source:
+                                   self   = page fetches postman-echo.com/headers and sets the
+                                            header on its OWN fetch (GH-pages proof: exercises page
+                                            logic + OCR without a live in-session proxy)
+                                   server = fetch <live_server>/check_custom_header_data (via the
+                                            &live_server= param, or same-origin when this page is
+                                            served from the live_server itself), whose headers
+                                            reflect the SESSION's injected egress (real in-session
+                                            path). No default base is baked into this public page.
+      &live_server=<url>         live_server base for echo=server (required unless same-origin)
+  -->
+  <div id="result">CHECKING</div>
+  <script>
+    var params    = new URLSearchParams(location.search);
+    var key       = (params.get("key")   || "X-Custom-Header").toLowerCase();
+    var value     = (params.get("value") || "").toLowerCase();
+    var present    = (params.get("present") || "true").toLowerCase() !== "false";
+    var echoMode  = (params.get("echo") || "self").toLowerCase();
+    var liveServer = params.get("live_server") || "";
+
+    function render(word) { document.getElementById("result").innerText = word; }
+
+    // Decide PASS/FAIL from an echoed header map. found = key present (and value matches if given).
+    function verdict(headers) {
+      var lower = {};
+      Object.keys(headers || {}).forEach(function (k) { lower[k.toLowerCase()] = String(headers[k]).toLowerCase(); });
+      var found = Object.prototype.hasOwnProperty.call(lower, key) && (value === "" || lower[key] === value);
+      // present=true  -> PASS when found ; present=false -> PASS when NOT found (disable path)
+      return (present ? found : !found) ? "PASS" : "FAIL";
+    }
+
+    function fetchSelf() {
+      // GH-pages proof: page sets the header on its own request, postman-echo reflects it.
+      // For the present=false (disable) proof, do NOT send the header so echo omits it -> PASS.
+      var h = {};
+      if (present) h[key] = value || "MyHeaderValue";
+      return fetch("https://postman-echo.com/headers?cb=" + Date.now(), { headers: h, cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(function (d) { return d.headers || {}; });
+    }
+
+    function fetchServer() {
+      // Real in-session path: the device's egress to /check_custom_header_data carries the
+      // session's proxy-injected headers; the route echoes them back. Base comes from the
+      // &live_server= param, or same-origin when this page is served from the live_server.
+      var base = /^https?:\/\//.test(liveServer) ? liveServer.replace(/\/+$/, "") : location.origin;
+      return fetch(base + "/check_custom_header_data?cb=" + Date.now(), { mode: "cors", cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(function (d) { return d.headers || {}; });
+    }
+
+    function check() {
+      (echoMode === "self" ? fetchSelf() : fetchServer())
+        .then(function (headers) { render(verdict(headers)); })
+        .catch(function (e) {
+          // A hard fetch error on the present=false path still means "header not observed" -> PASS.
+          // On present=true a fetch error can't confirm injection -> FAIL (shown so the test reads it).
+          console.error("verify fetch error:", e);
+          render(present ? "FAIL" : "PASS");
+        });
+    }
+
+    check();
+    // Live re-check so a mid-session enable/disable toggle is reflected without re-navigation.
+    setInterval(check, 3000);
+  </script>
+</body>
+</html>
