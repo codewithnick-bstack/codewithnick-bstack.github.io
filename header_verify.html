@@ -24,8 +24,12 @@
       overflow-wrap: break-word;
       padding: clamp(12px, 4vw, 32px) clamp(16px, 6vw, 48px);
     }
-    /* Off-screen: per-key detail for fail-diagnosis only. Never OCR'd (the test reads #result). */
-    #detail { position: absolute; left: -9999px; top: -9999px; }
+    /* Fail detail: shown UNDER the word only on FAIL (for humans / screenshots), small so it
+       never competes with the OCR word. Hidden on PASS + on CHECKING. The test OCRs #result,
+       not this. */
+    #detail { display: none; margin-top: 18px; max-width: 92vw; font-size: clamp(12px, 3vw, 18px); color: #b00; text-align: center; overflow-wrap: anywhere; white-space: pre-wrap; }
+    body.fail #detail { display: block; }
+    body.fail { flex-direction: column; }
   </style>
 </head>
 <body>
@@ -81,7 +85,14 @@
       expects.push({ key: rawKey.toLowerCase(), value: wantAbsent ? null : String(val).toLowerCase(), wantAbsent: wantAbsent });
     });
 
-    function render(word) { document.getElementById("result").innerText = word; }
+    // Render the OCR word (PASS/FAIL/CHECKING). On FAIL, reveal the detail line underneath;
+    // on PASS/CHECKING keep it hidden so nothing competes with the word for OCR.
+    function render(word, detailText) {
+      document.getElementById("result").innerText = word;
+      var d = document.getElementById("detail");
+      d.innerText = detailText || "";
+      document.body.classList.toggle("fail", word === "FAIL");
+    }
 
     // Evaluate all expectations against an echoed header map. Returns {pass, detail[]}.
     function evaluate(headers) {
@@ -134,16 +145,14 @@
       source()
         .then(function (headers) {
           var v = evaluate(headers);
-          render(v.pass ? "PASS" : "FAIL");
-          document.getElementById("detail").innerText = v.detail.join(" | ");
+          render(v.pass ? "PASS" : "FAIL", v.pass ? "" : v.detail.join("\n"));
           if (!v.pass) console.log("[header_verify] FAIL:", v.detail.join(" | "));
         })
         .catch(function (e) {
           // Fetch error can't confirm any present-expectation -> FAIL. (A pure all-absent check
           // could arguably PASS on error, but a network error is a real signal worth surfacing.)
           console.error("[header_verify] fetch error:", e);
-          render("FAIL");
-          document.getElementById("detail").innerText = "fetch error: " + e.message;
+          render("FAIL", "fetch error: " + e.message);
         });
     }
 
