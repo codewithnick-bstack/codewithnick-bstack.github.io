@@ -10,8 +10,9 @@
   <style>
     body { display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; padding: 16px; box-sizing: border-box; background: #fff; font-family: Arial, sans-serif; }
     #result {
-      /* Single short word (PASS / FAIL): responsive, never clips or overflows,
-         always large enough for OCR. clamp = floor / fluid / cap. Mirrors accessibility_check.ejs. */
+      /* Single short word (PASS / FAIL): responsive, never clips or overflows, always large enough
+         for OCR. clamp = floor / fluid / cap. Same pattern as accessibility_check.ejs so BSA's
+         existing ocrCanvasWord(['pass','fail']) reads it with zero new OCR code. */
       font-size: clamp(40px, 16vw, 96px);
       line-height: 1.1;
       font-weight: bold;
@@ -23,102 +24,126 @@
       overflow-wrap: break-word;
       padding: clamp(12px, 4vw, 32px) clamp(16px, 6vw, 48px);
     }
+    /* Off-screen: per-key detail for fail-diagnosis only. Never OCR'd (the test reads #result). */
+    #detail { position: absolute; left: -9999px; top: -9999px; }
   </style>
 </head>
 <body>
   <!--
     Self-contained header-injection verify page. Replaces the old two-hop check_header.ejs +
     /paste -> /pasted_text flow (which raced: the device POSTed captured headers to /paste, the
-    test fetched /pasted_text separately, and the write/read window flapped). Here the page does
-    the whole verify IN-PAGE and renders a single OCR-able state word (PASS / FAIL), the same
-    pattern as accessibility_check.ejs / dark_mode. The test reads the word with ocrCanvasWord
-    (screenshot -> crop -> OCR) after each toggle. No second endpoint, no paste round-trip.
+    test fetched /pasted_text separately, and that write/read window flapped). Here the page does
+    the whole verify IN-PAGE and renders ONE OCR-able state word (PASS / FAIL), the same pattern
+    as accessibility_check.ejs / dark_mode. The test screenshots + OCRs the word after each toggle
+    with ocrCanvasWord(['pass','fail']). No second endpoint, no paste round-trip.
 
-    Query params:
-      ?key=X-Custom-Header       header name to verify (case-insensitive)
-      &value=MyHeaderValue       expected value (case-insensitive); omit to check presence only
-      &present=true|false        true = expect header present (PASS if injected),
-                                 false = expect header absent (PASS if NOT injected, i.e. disable case)
+    URL model — arbitrary header pairs, ALL must match for PASS:
+      /header_verify.html?X-Custom-Header=MyHeaderValue&Authorization=null&echo=self
+        * each NON-reserved query pair is a header expectation:
+            key   = header name (case-insensitive)
+            value = expected value (case-insensitive); the literal  null  means "expect ABSENT"
+        * verdict = PASS iff EVERY pair is satisfied (present-ones found w/ matching value,
+          null-ones absent); otherwise FAIL. Per-key results go to #detail + console for fail-only
+          diagnosis, never OCR'd.
+        * the caller builds the pair list per platform, e.g. android run passes
+          ?X-Custom-Header=MyHeaderValue ; the same scenario on iOS (disable case) passes
+          ?X-Custom-Header=null . The page holds no platform logic.
+
+    Reserved (NOT treated as header pairs):
       &echo=self|server|httpbin  data source:
-                                   self   = SYNTHETIC (no network): the page builds the echoed
-                                            header map from its own params — present=true injects
-                                            key=value, present=false omits it. Deterministic proof
-                                            of the page verdict logic + the OCR PASS/FAIL render
-                                            pipeline, with zero external dependency (no CORS, no
-                                            flaky third-party echo). Use for the GH-pages proof.
-                                   httpbin= real network echo via httpbin.org/headers (CORS *),
-                                            page sets the header on its own fetch. Optional true-
-                                            network sanity check; httpbin is sometimes 503.
-                                   server = fetch <live_server>/check_custom_header_data (via the
-                                            &live_server= param, or same-origin when this page is
-                                            served from the live_server itself), whose headers
-                                            reflect the SESSION's injected egress (real in-session
-                                            path). No default base is baked into this public page.
-      &live_server=<url>         live_server base for echo=server (required unless same-origin)
+                                   self    = SYNTHETIC (no network): build the echoed header map
+                                             from the pairs themselves (present -> injected,
+                                             null -> omitted). Deterministic proof of verdict logic
+                                             + OCR render, zero external dep / CORS. GH-pages proof.
+                                   server  = fetch <live_server>/check_custom_header_data, whose
+                                             headers reflect the SESSION's proxy-injected egress
+                                             (real in-session path). Same-origin when this page is
+                                             served from the live_server, else pass &live_server=.
+                                   httpbin = real network echo via httpbin.org/headers (CORS *):
+                                             page sets the present-pairs on its own fetch. Optional
+                                             true-network sanity check (httpbin is sometimes 503).
+      &live_server=<url>         live_server base for echo=server (required unless same-origin).
+      &cb=<x>                    cache-buster, ignored.
   -->
   <div id="result">CHECKING</div>
+  <div id="detail"></div>
   <script>
+    var RESERVED = { echo: 1, live_server: 1, cb: 1 };
     var params    = new URLSearchParams(location.search);
-    var key       = (params.get("key")   || "X-Custom-Header").toLowerCase();
-    var value     = (params.get("value") || "").toLowerCase();
-    var present    = (params.get("present") || "true").toLowerCase() !== "false";
     var echoMode  = (params.get("echo") || "self").toLowerCase();
     var liveServer = params.get("live_server") || "";
 
+    // Build the expectation list from every non-reserved pair. value === "null" -> expect absent.
+    var expects = [];
+    params.forEach(function (val, rawKey) {
+      if (RESERVED[rawKey.toLowerCase()]) return;
+      var wantAbsent = String(val).toLowerCase() === "null";
+      expects.push({ key: rawKey.toLowerCase(), value: wantAbsent ? null : String(val).toLowerCase(), wantAbsent: wantAbsent });
+    });
+
     function render(word) { document.getElementById("result").innerText = word; }
 
-    // Decide PASS/FAIL from an echoed header map. found = key present (and value matches if given).
-    function verdict(headers) {
+    // Evaluate all expectations against an echoed header map. Returns {pass, detail[]}.
+    function evaluate(headers) {
       var lower = {};
       Object.keys(headers || {}).forEach(function (k) { lower[k.toLowerCase()] = String(headers[k]).toLowerCase(); });
-      var found = Object.prototype.hasOwnProperty.call(lower, key) && (value === "" || lower[key] === value);
-      // present=true  -> PASS when found ; present=false -> PASS when NOT found (disable path)
-      return (present ? found : !found) ? "PASS" : "FAIL";
+      var allPass = true;
+      var detail = [];
+      if (expects.length === 0) { allPass = false; detail.push("no header pairs given"); }
+      expects.forEach(function (e) {
+        var has = Object.prototype.hasOwnProperty.call(lower, e.key);
+        var ok;
+        if (e.wantAbsent) {
+          ok = !has;                                   // disable case: PASS when header absent
+        } else {
+          ok = has && (e.value === "" || lower[e.key] === e.value);  // presence (+value if given)
+        }
+        if (!ok) allPass = false;
+        detail.push(e.key + (e.wantAbsent ? "=ABSENT?" : "=" + e.value) + " -> " + (ok ? "OK" : "MISS(got " + (has ? lower[e.key] : "<none>") + ")"));
+      });
+      return { pass: allPass, detail: detail };
     }
 
+    // --- data sources ---
     function fetchSelf() {
-      // SYNTHETIC (no network): build the echoed header map from params. present=true -> key set,
-      // present=false -> key omitted. Deterministically drives the verdict + OCR render so the
-      // GH-pages proof needs no CORS-enabled third-party echo.
+      // SYNTHETIC (no network): the echoed map = present-pairs injected, null-pairs omitted.
       var headers = {};
-      if (present) headers[key] = value || "MyHeaderValue";
+      expects.forEach(function (e) { if (!e.wantAbsent) headers[e.key] = e.value || "MyHeaderValue"; });
       return Promise.resolve(headers);
     }
-
     function fetchHttpbin() {
-      // Optional real-network echo (CORS *). Page sets the header on its own request; for the
-      // disable proof (present=false) it omits the header so httpbin's echo lacks it -> PASS.
       var h = {};
-      if (present) h[key] = value || "MyHeaderValue";
+      expects.forEach(function (e) { if (!e.wantAbsent) h[e.key] = e.value || "MyHeaderValue"; });
       return fetch("https://httpbin.org/headers?cb=" + Date.now(), { headers: h, cache: "no-store" })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (d) { return d.headers || {}; });
     }
-
     function fetchServer() {
-      // Real in-session path: the device's egress to /check_custom_header_data carries the
-      // session's proxy-injected headers; the route echoes them back. Base comes from the
-      // &live_server= param, or same-origin when this page is served from the live_server.
       var base = /^https?:\/\//.test(liveServer) ? liveServer.replace(/\/+$/, "") : location.origin;
       return fetch(base + "/check_custom_header_data?cb=" + Date.now(), { mode: "cors", cache: "no-store" })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (d) { return d.headers || {}; });
     }
-
     function source() {
-      if (echoMode === "self") return fetchSelf();
+      if (echoMode === "server")  return fetchServer();
       if (echoMode === "httpbin") return fetchHttpbin();
-      return fetchServer();
+      return fetchSelf();
     }
 
     function check() {
       source()
-        .then(function (headers) { render(verdict(headers)); })
+        .then(function (headers) {
+          var v = evaluate(headers);
+          render(v.pass ? "PASS" : "FAIL");
+          document.getElementById("detail").innerText = v.detail.join(" | ");
+          if (!v.pass) console.log("[header_verify] FAIL:", v.detail.join(" | "));
+        })
         .catch(function (e) {
-          // A hard fetch error on the present=false path still means "header not observed" -> PASS.
-          // On present=true a fetch error can't confirm injection -> FAIL (shown so the test reads it).
-          console.error("verify fetch error:", e);
-          render(present ? "FAIL" : "PASS");
+          // Fetch error can't confirm any present-expectation -> FAIL. (A pure all-absent check
+          // could arguably PASS on error, but a network error is a real signal worth surfacing.)
+          console.error("[header_verify] fetch error:", e);
+          render("FAIL");
+          document.getElementById("detail").innerText = "fetch error: " + e.message;
         });
     }
 
